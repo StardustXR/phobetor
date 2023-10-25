@@ -1,0 +1,20 @@
+[package]
+name = "phobetor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+color-eyre = "0.6.2"
+glam = "0.24.1"
+input-event-codes = "5.16.8"
+manifest-dir-macros = "0.1.18"
+mint = "0.5.9"
+tokio = { version = "1.32.0", features = ["sync"] }
+
+[dependencies.stardust-xr-fusion]
+git = "https://github.com/StardustXR/core.git"
+# path = "../../core/fusion"
+
+[dependencies.stardust-xr-molecules]
+git = "https://github.com/StardustXR/molecules.git"
+# path = "../../molecules"
