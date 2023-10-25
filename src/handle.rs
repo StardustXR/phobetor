@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use glam::{vec3, Mat4, Quat, Vec3};
+use glam::{vec3, Quat, Vec3};
 use stardust_xr_fusion::{
 	core::values::Transform,
 	drawable::{Model, ModelPart},
@@ -15,15 +15,16 @@ use stardust_xr_molecules::input_action::{
 };
 
 pub struct Handle {
-	model_part: ModelPart,
+	model: Model,
+	handle_part: ModelPart,
 	_field: BoxField,
-	hold_offset: Vec3,
+	hold_center: ModelPart,
 	input_handler: HandlerWrapper<InputHandler, InputActionHandler<()>>,
 	condition_action: BaseInputAction<()>,
 	hold_action: SingleActorAction<()>,
 }
 impl Handle {
-	pub async fn create(model: &Model, right: bool) -> Result<Self, NodeError> {
+	pub async fn create(model: Model, right: bool) -> Result<Self, NodeError> {
 		let model_part = model.model_part(if !right { "Handle_L" } else { "Handle_R" })?;
 
 		// The bones in the center should be driven by the handles themselves so the panel can bend
@@ -46,14 +47,12 @@ impl Handle {
 			field_size,
 		)?;
 
-		let (hold_offset, _, _) = model
-			.model_part(if !right {
-				"Handle_L/Hold_Center_L"
-			} else {
-				"Handle_R/Hold_Center_R"
-			})?
-			.get_position_rotation_scale(&model_part)?
-			.await?;
+		// The point that this should be held at
+		let hold_center = model.model_part(if !right {
+			"Handle_L/Hold_Center_L"
+		} else {
+			"Handle_R/Hold_Center_R"
+		})?;
 
 		// And make the input handler so we can hold the panel
 		let input_handler =
@@ -74,9 +73,10 @@ impl Handle {
 			false,
 		);
 		Ok(Handle {
-			model_part,
+			model,
+			handle_part: model_part,
 			_field: field,
-			hold_offset: hold_offset.into(),
+			hold_center,
 			input_handler,
 			condition_action,
 			hold_action,
@@ -89,6 +89,16 @@ impl Handle {
 			self.hold_action.type_erase(),
 		]);
 		self.hold_action.update(&mut self.condition_action);
+
+		// Makes orientation a TON easier
+		if self.hold_action.actor_started() {
+			self.hold_center
+				.set_spatial_parent_in_place(&self.model)
+				.unwrap();
+			self.handle_part
+				.set_spatial_parent_in_place(&self.hold_center)
+				.unwrap();
+		}
 
 		if let Some(holding) = self.hold_action.actor() {
 			let InputDataType::Hand(hand) = &holding.input else {return};
@@ -104,14 +114,21 @@ impl Handle {
 				vec3(0.0, 1.0, 0.0),
 				(knuckles[0] - knuckles[1]).normalize(),
 			) * Quat::from_rotation_y(PI);
-			self.model_part
+			self.hold_center
 				.set_transform(
 					Some(&self.input_handler.node()),
-					Transform::from_position_rotation(
-						knuckle_center - (rotation * self.hold_offset),
-						rotation,
-					),
+					Transform::from_position_rotation(knuckle_center, rotation),
 				)
+				.unwrap();
+		}
+
+		// Makes alignment and closing WAY easier
+		if self.hold_action.actor_stopped() {
+			self.handle_part
+				.set_spatial_parent_in_place(&self.model)
+				.unwrap();
+			self.hold_center
+				.set_spatial_parent_in_place(&self.handle_part)
 				.unwrap();
 		}
 	}
@@ -119,6 +136,6 @@ impl Handle {
 	pub fn update_with_other(&mut self, other: &Handle) {}
 
 	pub fn root(&self) -> &Spatial {
-		&self.model_part
+		&self.handle_part
 	}
 }
