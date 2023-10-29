@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use glam::{vec3, Quat, Vec3};
+use glam::{vec3, Affine3A, Mat3, Mat4, Quat, Vec3};
 use stardust_xr_fusion::{
 	core::values::Transform,
 	drawable::{Model, ModelPart},
@@ -14,11 +14,18 @@ use stardust_xr_molecules::input_action::{
 	BaseInputAction, InputAction, InputActionHandler, SingleActorAction,
 };
 
+struct GrabInfo {
+	position: Vec3,
+	direction: Vec3,
+}
+
 pub struct Handle {
 	model: Model,
 	handle_part: ModelPart,
+	right: bool,
 	_field: BoxField,
 	hold_center: ModelPart,
+	grab_info: Option<GrabInfo>,
 	input_handler: HandlerWrapper<InputHandler, InputActionHandler<()>>,
 	condition_action: BaseInputAction<()>,
 	hold_action: SingleActorAction<()>,
@@ -59,24 +66,25 @@ impl Handle {
 			InputHandler::create(model.client()?.get_root(), Transform::none(), &field)?
 				.wrap(InputActionHandler::default())?;
 		let condition_action = BaseInputAction::new(false, |input, _| match &input.input {
-			InputDataType::Hand(_) => input.distance < 0.04,
+			InputDataType::Hand(_) => input.distance < 0.1,
 			_ => false,
 		});
 		let hold_action = SingleActorAction::new(
 			true,
 			|input, _| {
-				input.datamap.with_data(|d| {
-					d.idx("pinch_strength").as_f32() > 0.75
-						&& d.idx("grab_strength").as_f32() > 0.75
-				})
+				input
+					.datamap
+					.with_data(|d| d.idx("grab_strength").as_f32() > 0.75)
 			},
 			false,
 		);
 		Ok(Handle {
 			model,
 			handle_part: model_part,
+			right,
 			_field: field,
 			hold_center,
+			grab_info: None,
 			input_handler,
 			condition_action,
 			hold_action,
@@ -101,25 +109,22 @@ impl Handle {
 		}
 
 		if let Some(holding) = self.hold_action.actor() {
-			let InputDataType::Hand(hand) = &holding.input else {return};
+			let InputDataType::Hand(hand) = &holding.input else {println!("not a hand :("); return};
 			let knuckles: [Vec3; 4] = [
 				hand.index.proximal.position.into(),
 				hand.little.proximal.position.into(),
-				hand.index.distal.position.into(),
+				hand.middle.distal.position.into(),
 				hand.little.distal.position.into(),
 			];
-			let knuckle_center = knuckles.iter().sum::<Vec3>() / (knuckles.len() as f32);
 
-			let rotation = Quat::from_rotation_arc(
-				vec3(0.0, 1.0, 0.0),
-				(knuckles[0] - knuckles[1]).normalize(),
-			) * Quat::from_rotation_y(PI);
-			self.hold_center
-				.set_transform(
-					Some(&self.input_handler.node()),
-					Transform::from_position_rotation(knuckle_center, rotation),
-				)
-				.unwrap();
+			let knuckle_center = knuckles.iter().sum::<Vec3>() / (knuckles.len() as f32);
+			let proximal_direction = knuckles[0] - knuckles[1];
+			let distal_direction = knuckles[2] - knuckles[3];
+			let direction = ((proximal_direction + distal_direction) / 2.0).normalize();
+			self.grab_info.replace(GrabInfo {
+				position: knuckle_center,
+				direction,
+			});
 		}
 
 		// Makes alignment and closing WAY easier
@@ -130,11 +135,43 @@ impl Handle {
 			self.hold_center
 				.set_spatial_parent_in_place(&self.handle_part)
 				.unwrap();
+			self.grab_info.take();
 		}
 	}
 
-	pub fn update_with_other(&mut self, other: &Handle) {}
+	pub fn update_with_other(&mut self, other: &Handle) {
+		if let Some(grab_info) = &self.grab_info {
+			if let Some(other_grab_info) = &other.grab_info {
+				let basis_vector_x = (other_grab_info.position - grab_info.position)
+					.reject_from(grab_info.direction)
+					.normalize();
+				let basis_vector_y = grab_info.direction;
+				let basis_vector_z = basis_vector_x.cross(basis_vector_y).normalize();
 
+				let rotation_matrix = Affine3A::from_cols(
+					basis_vector_x.into(),
+					basis_vector_y.into(),
+					basis_vector_z.into(),
+					Vec3::ZERO.into(),
+				);
+				let mut rotation = Quat::from_affine3(&rotation_matrix);
+				if !self.right {
+					rotation *= Quat::from_rotation_y(PI);
+				}
+
+				self.hold_center
+					.set_transform(
+						Some(self.input_handler.node()),
+						Transform::from_position_rotation(grab_info.position, rotation),
+					)
+					.unwrap();
+			} else {
+				self.hold_center
+					.set_position(Some(self.input_handler.node()), grab_info.position)
+					.unwrap();
+			}
+		}
+	}
 	pub fn root(&self) -> &Spatial {
 		&self.handle_part
 	}
