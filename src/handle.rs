@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use glam::{vec3, Affine3A, Mat3, Mat4, Quat, Vec3};
+use glam::{Affine3A, Quat, Vec3};
 use stardust_xr_fusion::{
 	core::values::Transform,
 	drawable::{Model, ModelPart},
@@ -66,7 +66,7 @@ impl Handle {
 			InputHandler::create(model.client()?.get_root(), Transform::none(), &field)?
 				.wrap(InputActionHandler::default())?;
 		let condition_action = BaseInputAction::new(false, |input, _| match &input.input {
-			InputDataType::Hand(_) => input.distance < 0.1,
+			InputDataType::Hand(_) => input.distance < 0.025,
 			_ => false,
 		});
 		let hold_action = SingleActorAction::new(
