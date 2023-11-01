@@ -14,13 +14,14 @@ use stardust_xr_molecules::input_action::{
 	BaseInputAction, InputAction, InputActionHandler, SingleActorAction,
 };
 
-struct GrabInfo {
+pub struct GrabInfo {
 	position: Vec3,
 	direction: Vec3,
 }
 
 pub struct Handle {
-	model: Model,
+	root_space: Spatial,
+	root: Spatial,
 	handle_part: ModelPart,
 	right: bool,
 	_field: BoxField,
@@ -28,16 +29,20 @@ pub struct Handle {
 	grab_info: Option<GrabInfo>,
 	input_handler: HandlerWrapper<InputHandler, InputActionHandler<()>>,
 	condition_action: BaseInputAction<()>,
-	hold_action: SingleActorAction<()>,
+	pub hold_action: SingleActorAction<()>,
 }
 impl Handle {
 	pub async fn create(model: Model, right: bool) -> Result<Self, NodeError> {
-		let model_part = model.model_part(if !right { "Handle_L" } else { "Handle_R" })?;
+		let root_space = model.client()?.get_root().alias();
+		let handle_part = model.model_part(if !right { "Handle_L" } else { "Handle_R" })?;
+		let root = Spatial::create(&root_space, Transform::identity(), false)?;
+		root.set_transform(Some(&handle_part), Transform::identity())?;
+		handle_part.set_spatial_parent_in_place(&root)?;
 
 		// The bones in the center should be driven by the handles themselves so the panel can bend
 		model
 			.model_part(if !right { "Frame/Left" } else { "Frame/Right" })?
-			.set_spatial_parent_in_place(&model_part)?;
+			.set_spatial_parent_in_place(&handle_part)?;
 
 		// Make the box field for interaction based on the model itself!
 		let (field_pos, field_rot, field_size) = model
@@ -46,10 +51,10 @@ impl Handle {
 			} else {
 				"Handle_R/Field_R"
 			})?
-			.get_position_rotation_scale(&model_part)?
+			.get_position_rotation_scale(&handle_part)?
 			.await?;
-		let field = BoxField::create(
-			&model_part,
+		let _field = BoxField::create(
+			&handle_part,
 			Transform::from_position_rotation(field_pos, field_rot),
 			field_size,
 		)?;
@@ -62,9 +67,8 @@ impl Handle {
 		})?;
 
 		// And make the input handler so we can hold the panel
-		let input_handler =
-			InputHandler::create(model.client()?.get_root(), Transform::none(), &field)?
-				.wrap(InputActionHandler::default())?;
+		let input_handler = InputHandler::create(&root_space, Transform::none(), &_field)?
+			.wrap(InputActionHandler::default())?;
 		let condition_action = BaseInputAction::new(false, |input, _| match &input.input {
 			InputDataType::Hand(_) => input.distance < 0.025,
 			_ => false,
@@ -79,10 +83,11 @@ impl Handle {
 			false,
 		);
 		Ok(Handle {
-			model,
-			handle_part: model_part,
+			root_space,
+			root,
+			handle_part,
 			right,
-			_field: field,
+			_field,
 			hold_center,
 			grab_info: None,
 			input_handler,
@@ -100,12 +105,7 @@ impl Handle {
 
 		// Makes orientation a TON easier
 		if self.hold_action.actor_started() {
-			self.hold_center
-				.set_spatial_parent_in_place(&self.model)
-				.unwrap();
-			self.handle_part
-				.set_spatial_parent_in_place(&self.hold_center)
-				.unwrap();
+			self.move_root(&self.hold_center).unwrap();
 		}
 
 		if let Some(holding) = self.hold_action.actor() {
@@ -129,17 +129,37 @@ impl Handle {
 
 		// Makes alignment and closing WAY easier
 		if self.hold_action.actor_stopped() {
-			self.handle_part
-				.set_spatial_parent_in_place(&self.model)
-				.unwrap();
-			self.hold_center
-				.set_spatial_parent_in_place(&self.handle_part)
-				.unwrap();
+			self.move_root(&self.handle_part).unwrap();
 			self.grab_info.take();
 		}
 	}
 
+	fn move_root(&self, to: &Spatial) -> Result<(), NodeError> {
+		self.handle_part
+			.set_spatial_parent_in_place(&self.root_space)?;
+		self.root.set_transform(Some(&to), Transform::identity())?;
+		self.handle_part.set_spatial_parent_in_place(&self.root)?;
+		Ok(())
+	}
+
 	pub fn update_with_other(&mut self, other: &Handle) {
+		let do_parent_single =
+			!self.hold_action.actor_acting() && other.hold_action.actor_started();
+		let do_parent_both = self.hold_action.actor_stopped() && other.hold_action.actor_acting();
+		let do_unparent_single =
+			self.hold_action.actor_started() && other.hold_action.actor_acting();
+		let do_unparent_both =
+			!self.hold_action.actor_acting() && other.hold_action.actor_stopped();
+
+		if do_parent_single || do_parent_both {
+			self.root.set_spatial_parent_in_place(&other.root).unwrap();
+		}
+		if do_unparent_single || do_unparent_both {
+			self.root
+				.set_spatial_parent_in_place(&self.root_space)
+				.unwrap();
+		}
+
 		if let Some(grab_info) = &self.grab_info {
 			if let Some(other_grab_info) = &other.grab_info {
 				let basis_vector_x = (other_grab_info.position - grab_info.position)
@@ -159,20 +179,15 @@ impl Handle {
 					rotation *= Quat::from_rotation_y(PI);
 				}
 
-				self.hold_center
+				self.root
 					.set_transform(
-						Some(self.input_handler.node()),
+						None,
 						Transform::from_position_rotation(grab_info.position, rotation),
 					)
 					.unwrap();
 			} else {
-				self.hold_center
-					.set_position(Some(self.input_handler.node()), grab_info.position)
-					.unwrap();
+				self.root.set_position(None, grab_info.position).unwrap();
 			}
 		}
-	}
-	pub fn root(&self) -> &Spatial {
-		&self.handle_part
 	}
 }

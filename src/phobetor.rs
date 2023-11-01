@@ -33,6 +33,7 @@ impl RootHandler for Phobetor {
 	fn frame(&mut self, _info: FrameInfo) {
 		self.handles.0.update_single();
 		self.handles.1.update_single();
+
 		self.handles.0.update_with_other(&self.handles.1);
 		self.handles.1.update_with_other(&self.handles.0);
 	}
