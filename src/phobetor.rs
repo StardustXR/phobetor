@@ -2,9 +2,10 @@ use crate::handle::Handle;
 use color_eyre::eyre::Result;
 use stardust_xr_fusion::{
 	client::{Client, ClientState, FrameInfo, RootHandler},
-	core::values::Transform,
-	drawable::{Model, ResourceID},
+	core::values::ResourceID,
+	drawable::Model,
 	node::{NodeError, NodeType},
+	spatial::Transform,
 };
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ pub struct Phobetor {
 impl Phobetor {
 	pub async fn new(client: &Arc<Client>) -> Result<Self, NodeError> {
 		let model = Model::create(
-			&client.get_root(),
+			client.get_root(),
 			Transform::identity(),
 			&ResourceID::new_namespaced("phobetor", "phobetor"),
 		)?;

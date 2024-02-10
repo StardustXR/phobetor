@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 color-eyre = "0.6.2"
-glam = "0.24.1"
+glam = "0.25.0"
 input-event-codes = "5.16.8"
 manifest-dir-macros = "0.1.18"
 mint = "0.5.9"

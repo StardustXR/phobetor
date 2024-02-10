@@ -2,17 +2,14 @@ use std::f32::consts::PI;
 
 use glam::{Affine3A, Quat, Vec3};
 use stardust_xr_fusion::{
-	core::values::Transform,
 	drawable::{Model, ModelPart},
 	fields::BoxField,
 	input::{InputDataType, InputHandler},
 	node::{NodeError, NodeType},
-	spatial::Spatial,
+	spatial::{Spatial, SpatialAspect, Transform},
 	HandlerWrapper,
 };
-use stardust_xr_molecules::input_action::{
-	BaseInputAction, InputAction, InputActionHandler, SingleActorAction,
-};
+use stardust_xr_molecules::input_action::{BaseInputAction, InputActionHandler, SingleActorAction};
 
 pub struct GrabInfo {
 	position: Vec3,
@@ -36,7 +33,7 @@ impl Handle {
 		let root_space = model.client()?.get_root().alias();
 		let handle_part = model.model_part(if !right { "Handle_L" } else { "Handle_R" })?;
 		let root = Spatial::create(&root_space, Transform::identity(), false)?;
-		root.set_transform(Some(&handle_part), Transform::identity())?;
+		root.set_relative_transform(&handle_part, Transform::identity())?;
 		handle_part.set_spatial_parent_in_place(&root)?;
 
 		// The bones in the center should be driven by the handles themselves so the panel can bend
@@ -45,18 +42,21 @@ impl Handle {
 			.set_spatial_parent_in_place(&handle_part)?;
 
 		// Make the box field for interaction based on the model itself!
-		let (field_pos, field_rot, field_size) = model
+		let field_transform = model
 			.model_part(if !right {
 				"Handle_L/Field_L"
 			} else {
 				"Handle_R/Field_R"
 			})?
-			.get_position_rotation_scale(&handle_part)?
+			.get_transform(&handle_part)
 			.await?;
 		let _field = BoxField::create(
 			&handle_part,
-			Transform::from_position_rotation(field_pos, field_rot),
-			field_size,
+			Transform::from_translation_rotation(
+				field_transform.translation.unwrap(),
+				field_transform.rotation.unwrap(),
+			),
+			field_transform.scale.unwrap(),
 		)?;
 
 		// The point that this should be held at
@@ -67,8 +67,11 @@ impl Handle {
 		})?;
 
 		// And make the input handler so we can hold the panel
-		let input_handler = InputHandler::create(&root_space, Transform::none(), &_field)?
-			.wrap(InputActionHandler::default())?;
+		let input_handler = InputActionHandler::wrap(
+			InputHandler::create(&root_space, Transform::none(), &_field)?,
+			(),
+		)?;
+
 		let condition_action = BaseInputAction::new(false, |input, _| match &input.input {
 			InputDataType::Hand(_) => input.distance < 0.025,
 			_ => false,
@@ -97,11 +100,10 @@ impl Handle {
 	}
 
 	pub fn update_single(&mut self) {
-		self.input_handler.lock_wrapped().update_actions([
-			self.condition_action.type_erase(),
-			self.hold_action.type_erase(),
-		]);
-		self.hold_action.update(&mut self.condition_action);
+		self.input_handler
+			.lock_wrapped()
+			.update_actions([&mut self.condition_action, self.hold_action.base_mut()]);
+		self.hold_action.update(Some(&mut self.condition_action));
 
 		// Makes orientation a TON easier
 		if self.hold_action.actor_started() {
@@ -109,7 +111,10 @@ impl Handle {
 		}
 
 		if let Some(holding) = self.hold_action.actor() {
-			let InputDataType::Hand(hand) = &holding.input else {println!("not a hand :("); return};
+			let InputDataType::Hand(hand) = &holding.input else {
+				println!("not a hand :(");
+				return;
+			};
 			let knuckles: [Vec3; 4] = [
 				hand.index.proximal.position.into(),
 				hand.little.proximal.position.into(),
@@ -134,10 +139,11 @@ impl Handle {
 		}
 	}
 
-	fn move_root(&self, to: &Spatial) -> Result<(), NodeError> {
+	fn move_root(&self, to: &impl SpatialAspect) -> Result<(), NodeError> {
 		self.handle_part
 			.set_spatial_parent_in_place(&self.root_space)?;
-		self.root.set_transform(Some(&to), Transform::identity())?;
+		self.root
+			.set_relative_transform(to, Transform::identity())?;
 		self.handle_part.set_spatial_parent_in_place(&self.root)?;
 		Ok(())
 	}
@@ -180,13 +186,15 @@ impl Handle {
 				}
 
 				self.root
-					.set_transform(
-						None,
-						Transform::from_position_rotation(grab_info.position, rotation),
-					)
+					.set_local_transform(Transform::from_translation_rotation(
+						grab_info.position,
+						rotation,
+					))
 					.unwrap();
 			} else {
-				self.root.set_position(None, grab_info.position).unwrap();
+				self.root
+					.set_local_transform(Transform::from_translation(grab_info.position))
+					.unwrap();
 			}
 		}
 	}
